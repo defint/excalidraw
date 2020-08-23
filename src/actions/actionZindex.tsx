@@ -18,47 +18,30 @@ import {
 import { ExcalidrawElement } from "../element/types";
 import { AppState } from "../types";
 
-const getElementIndices = (
-  direction: "left" | "right",
+const getSelectedElementIndices = (
   elements: readonly ExcalidrawElement[],
   appState: AppState,
 ) => {
-  const selectedIndices: number[] = [];
-  let deletedIndicesCache: number[] = [];
-
-  const cb = (element: ExcalidrawElement, index: number) => {
-    if (element.isDeleted) {
-      // we want to build an array of deleted elements that are preceeding
-      //  a selected element so that we move them together
-      deletedIndicesCache.push(index);
-    } else {
-      if (appState.selectedElementIds[element.id]) {
-        selectedIndices.push(...deletedIndicesCache, index);
+  let selectedIndices: number[] = [];
+  let deletedIndices: number[] = [];
+  let includeDeletedIndex = null;
+  let i = -1;
+  while (++i < elements.length) {
+    if (appState.selectedElementIds[elements[i].id]) {
+      if (deletedIndices.length) {
+        selectedIndices = selectedIndices.concat(deletedIndices);
+        deletedIndices = [];
       }
-      // always empty cache of deleted elements after either pushing a group
-      //  of selected/deleted elements, of after encountering non-deleted elem
-      deletedIndicesCache = [];
-    }
-  };
-
-  // sending back → select contiguous deleted elements that are to the left of
-  //  selected element(s)
-  if (direction === "left") {
-    let i = -1;
-    const len = elements.length;
-    while (++i < len) {
-      cb(elements[i], i);
-    }
-    // moving to front → loop from right to left so that we don't need to
-    //  backtrack when gathering deleted elements
-  } else {
-    let i = elements.length;
-    while (--i > -1) {
-      cb(elements[i], i);
+      selectedIndices.push(i);
+      includeDeletedIndex = i + 1;
+    } else if (elements[i].isDeleted && includeDeletedIndex === i) {
+      includeDeletedIndex = i + 1;
+      deletedIndices.push(i);
+    } else {
+      deletedIndices = [];
     }
   }
-  // sort in case we were gathering indexes from right to left
-  return selectedIndices.sort();
+  return selectedIndices;
 };
 
 const moveElements = (
@@ -66,11 +49,8 @@ const moveElements = (
   elements: readonly ExcalidrawElement[],
   appState: AppState,
 ) => {
-  const _elements = elements.slice();
-  const direction =
-    func === moveOneLeft || func === moveAllLeft ? "left" : "right";
-  const indices = getElementIndices(direction, _elements, appState);
-  return func(_elements, indices);
+  const indices = getSelectedElementIndices(elements, appState);
+  return func(appState, elements.slice(), indices);
 };
 
 export const actionSendBackward = register({

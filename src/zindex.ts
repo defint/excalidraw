@@ -1,202 +1,240 @@
-const swap = <T>(elements: T[], indexA: number, indexB: number) => {
-  const element = elements[indexA];
-  elements[indexA] = elements[indexB];
-  elements[indexB] = element;
+import { AppState } from "./types";
+import { ExcalidrawElement } from "./element/types";
+import { getElementsInGroup } from "./groups";
+import { findLastIndex, findIndex } from "./utils";
+
+const toContiguousGroups = (array: number[]) => {
+  let cursor = 0;
+  return array.reduce((acc, value, index) => {
+    if (index > 0 && array[index - 1] !== value - 1) {
+      cursor = ++cursor;
+    }
+    (acc[cursor] || (acc[cursor] = [])).push(value);
+    return acc;
+  }, [] as number[][]);
 };
 
-export const moveOneLeft = <T>(elements: T[], indicesToMove: number[]) => {
-  indicesToMove.sort((a: number, b: number) => a - b);
-  let isSorted = true;
-  // We go from left to right to avoid overriding the wrong elements
-  indicesToMove.forEach((index, i) => {
-    // We don't want to bubble the first elements that are sorted as they are
-    // already in their correct position
-    isSorted = isSorted && index === i;
-    if (isSorted) {
+const getSuitableIndex = (
+  appState: AppState,
+  elements: ExcalidrawElement[],
+  boundaryIndex: number,
+  direction: "left" | "right",
+) => {
+  const sourceElement = elements[boundaryIndex];
+
+  const candidateIndex =
+    direction === "left"
+      ? findLastIndex(
+          elements,
+          (element) => {
+            return !element.isDeleted;
+          },
+          Math.max(0, boundaryIndex - 1),
+        )
+      : findIndex(
+          elements,
+          (element, idx) => {
+            return !element.isDeleted;
+          },
+          boundaryIndex + 1,
+        );
+
+  const nextElement = elements[candidateIndex];
+
+  if (!nextElement) {
+    return -1;
+  }
+
+  if (appState.editingGroupId) {
+    if (
+      // candidate element is a sibling in current editing group → return
+      sourceElement?.groupIds.join("") === nextElement?.groupIds.join("")
+    ) {
+      return candidateIndex;
+    } else if (!nextElement?.groupIds.includes(appState.editingGroupId)) {
+      // candidate element is outside current editing group → prevent
+      return -1;
+    }
+  }
+
+  if (!nextElement.groupIds.length) {
+    return candidateIndex;
+  }
+
+  const targetGroupId = appState.editingGroupId
+    ? nextElement.groupIds[
+        nextElement.groupIds.indexOf(appState.editingGroupId) - 1
+      ]
+    : nextElement.groupIds[nextElement.groupIds.length - 1];
+
+  const elementsInGroup = getElementsInGroup(elements, targetGroupId);
+
+  if (elementsInGroup.length) {
+    // assumes getElementsInGroup() returned elements are sorted
+    //  by zIndex (ascending)
+    return direction === "left"
+      ? elements.indexOf(elementsInGroup[0])
+      : elements.indexOf(elementsInGroup[elementsInGroup.length - 1]);
+  }
+
+  return candidateIndex;
+};
+
+const shiftElements = (
+  appState: AppState,
+  elements: ExcalidrawElement[],
+  indicesToMove: number[],
+  direction: "left" | "right",
+) => {
+  const groupedIndices = toContiguousGroups(indicesToMove);
+
+  groupedIndices.forEach((indices, i) => {
+    const leadingIndex = indices[0];
+    const trailingIndex = indices[indices.length - 1];
+    const boundaryIndex = direction === "left" ? leadingIndex : trailingIndex;
+
+    const targetIndex = getSuitableIndex(
+      appState,
+      elements,
+      boundaryIndex,
+      direction,
+    );
+
+    if (targetIndex === -1 || boundaryIndex === targetIndex) {
       return;
     }
-    swap(elements, index - 1, index);
+
+    const leadingElements =
+      direction === "left"
+        ? elements.slice(0, targetIndex)
+        : elements.slice(0, leadingIndex);
+    const targetElements = elements.slice(leadingIndex, trailingIndex + 1);
+    const displacedElements =
+      direction === "left"
+        ? elements.slice(targetIndex, leadingIndex)
+        : elements.slice(trailingIndex + 1, targetIndex + 1);
+    const trailingElements =
+      direction === "left"
+        ? elements.slice(trailingIndex + 1)
+        : elements.slice(targetIndex + 1);
+
+    elements =
+      direction === "left"
+        ? [
+            ...leadingElements,
+            ...targetElements,
+            ...displacedElements,
+            ...trailingElements,
+          ]
+        : [
+            ...leadingElements,
+            ...displacedElements,
+            ...targetElements,
+            ...trailingElements,
+          ];
   });
 
   return elements;
 };
 
-export const moveOneRight = <T>(elements: T[], indicesToMove: number[]) => {
-  const reversedIndicesToMove = indicesToMove.sort(
-    (a: number, b: number) => b - a,
-  );
-  let isSorted = true;
-
-  // We go from right to left to avoid overriding the wrong elements
-  reversedIndicesToMove.forEach((index, i) => {
-    // We don't want to bubble the first elements that are sorted as they are
-    // already in their correct position
-    isSorted = isSorted && index === elements.length - i - 1;
-    if (isSorted) {
-      return;
-    }
-    swap(elements, index + 1, index);
-  });
-  return elements;
+export const moveOneLeft = (
+  appState: AppState,
+  elements: ExcalidrawElement[],
+  indicesToMove: number[],
+) => {
+  return shiftElements(appState, elements, indicesToMove, "left");
 };
 
-// Let's go through an example
-//        |        |
-// [a, b, c, d, e, f, g]
-// -->
-// [c, f, a, b, d, e, g]
-//
-// We are going to override all the elements we want to move, so we keep them in an array
-// that we will restore at the end.
-// [c, f]
-//
-// From now on, we'll never read those values from the array anymore
-//        |1       |0
-// [a, b, _, d, e, _, g]
-//
-// The idea is that we want to shift all the elements between the marker 0 and 1
-// by one slot to the right.
-//
-//        |1       |0
-// [a, b, _, d, e, _, g]
-//          -> ->
-//
-// which gives us
-//
-//        |1       |0
-// [a, b, _, _, d, e, g]
-//
-// Now, we need to move all the elements from marker 1 to the beginning by two (not one)
-// slots to the right, which gives us
-//
-//        |1       |0
-// [a, b, _, _, d, e, g]
-//  ---|--^  ^
-//     ------|
-//
-// which gives us
-//
-//        |1       |0
-// [_, _, a, b, d, e, g]
-//
-// At this point, we can fill back the leftmost elements with the array we saved at
-// the beginning
-//
-//        |1       |0
-// [c, f, a, b, d, e, g]
-//
-// And we are done!
-export const moveAllLeft = <T>(elements: T[], indicesToMove: number[]) => {
-  indicesToMove.sort((a: number, b: number) => a - b);
-
-  // Copy the elements to move
-  const leftMostElements = indicesToMove.map((index) => elements[index]);
-
-  const reversedIndicesToMove = indicesToMove
-    // We go from right to left to avoid overriding elements.
-    .reverse()
-    // We add 0 for the final marker
-    .concat([0]);
-
-  reversedIndicesToMove.forEach((index, i) => {
-    // We skip the first one as it is not paired with anything else
-    if (i === 0) {
-      return;
-    }
-
-    // We go from the next marker to the right (i - 1) to the current one (index)
-    for (let pos = reversedIndicesToMove[i - 1] - 1; pos >= index; --pos) {
-      // We move by 1 the first time, 2 the second... So we can use the index i in the array
-      elements[pos + i] = elements[pos];
-    }
-  });
-
-  // The final step
-  leftMostElements.forEach((element, i) => {
-    elements[i] = element;
-  });
-
-  return elements;
+export const moveOneRight = (
+  appState: AppState,
+  elements: ExcalidrawElement[],
+  indicesToMove: number[],
+) => {
+  return shiftElements(appState, elements, indicesToMove, "right");
 };
 
-// Let's go through an example
-//        |        |
-// [a, b, c, d, e, f, g]
-// -->
-// [a, b, d, e, g, c, f]
-//
-// We are going to override all the elements we want to move, so we keep them in an array
-// that we will restore at the end.
-// [c, f]
-//
-// From now on, we'll never read those values from the array anymore
-//        |0       |1
-// [a, b, _, d, e, _, g]
-//
-// The idea is that we want to shift all the elements between the marker 0 and 1
-// by one slot to the left.
-//
-//        |0       |1
-// [a, b, _, d, e, _, g]
-//          <- <-
-//
-// which gives us
-//
-//        |0       |1
-// [a, b, d, e, _, _, g]
-//
-// Now, we need to move all the elements from marker 1 to the end by two (not one)
-// slots to the left, which gives us
-//
-//        |0       |1
-// [a, b, d, e, _, _, g]
-//              ^------
-//
-// which gives us
-//
-//        |0       |1
-// [a, b, d, e, g, _, _]
-//
-// At this point, we can fill back the rightmost elements with the array we saved at
-// the beginning
-//
-//        |0       |1
-// [a, b, d, e, g, c, f]
-//
-// And we are done!
-export const moveAllRight = <T>(elements: T[], indicesToMove: number[]) => {
-  const reversedIndicesToMove = indicesToMove.sort(
-    (a: number, b: number) => b - a,
-  );
+export const moveAllLeft = (
+  appState: AppState,
+  elements: ExcalidrawElement[],
+  indicesToMove: number[],
+) => {
+  const targetElements: ExcalidrawElement[] = [];
+  const displacedElements: ExcalidrawElement[] = [];
 
-  // Copy the elements to move
-  const rightMostElements = reversedIndicesToMove.map(
-    (index) => elements[index],
-  );
+  if (appState.editingGroupId) {
+    const groupElements = getElementsInGroup(elements, appState.editingGroupId);
+    const leadingIndex = elements.indexOf(groupElements[0]);
+    const trailingIndex = leadingIndex + groupElements.length - 1;
 
-  indicesToMove = reversedIndicesToMove
-    // We go from left to right to avoid overriding elements.
-    .reverse()
-    // We last element index for the final marker
-    .concat([elements.length]);
+    groupElements.forEach((element, index) => {
+      if (indicesToMove.indexOf(index + leadingIndex) > -1) {
+        targetElements.push(element);
+      } else {
+        displacedElements.push(element);
+      }
+    });
 
-  indicesToMove.forEach((index, i) => {
-    // We skip the first one as it is not paired with anything else
-    if (i === 0) {
-      return;
-    }
+    const leadingElements = elements.slice(0, leadingIndex);
+    const trailingElements = elements.slice(leadingIndex + trailingIndex + 1);
 
-    // We go from the next marker to the left (i - 1) to the current one (index)
-    for (let pos = indicesToMove[i - 1] + 1; pos < index; ++pos) {
-      // We move by 1 the first time, 2 the second... So we can use the index i in the array
-      elements[pos - i] = elements[pos];
+    return [
+      ...leadingElements,
+      ...targetElements,
+      ...displacedElements,
+      ...trailingElements,
+    ];
+  }
+
+  elements.forEach((element, index) => {
+    if (indicesToMove.indexOf(index) > -1) {
+      targetElements.push(element);
+    } else {
+      displacedElements.push(element);
     }
   });
 
-  // The final step
-  rightMostElements.forEach((element, i) => {
-    elements[elements.length - i - 1] = element;
+  return targetElements.concat(displacedElements);
+};
+
+export const moveAllRight = (
+  appState: AppState,
+  elements: ExcalidrawElement[],
+  indicesToMove: number[],
+) => {
+  const targetElements: ExcalidrawElement[] = [];
+  const displacedElements: ExcalidrawElement[] = [];
+
+  if (appState.editingGroupId) {
+    const groupElements = getElementsInGroup(elements, appState.editingGroupId);
+    const leadingIndex = elements.indexOf(groupElements[0]);
+    const trailingIndex = leadingIndex + groupElements.length - 1;
+
+    groupElements.forEach((element, index) => {
+      if (indicesToMove.indexOf(index + leadingIndex) > -1) {
+        targetElements.push(element);
+      } else {
+        displacedElements.push(element);
+      }
+    });
+
+    const leadingElements = elements.slice(0, leadingIndex);
+    const trailingElements = elements.slice(trailingIndex + 1);
+
+    return [
+      ...leadingElements,
+      ...displacedElements,
+      ...targetElements,
+      ...trailingElements,
+    ];
+  }
+
+  elements.forEach((element, index) => {
+    if (indicesToMove.indexOf(index) > -1) {
+      targetElements.push(element);
+    } else {
+      displacedElements.push(element);
+    }
   });
 
-  return elements;
+  return displacedElements.concat(targetElements);
 };
