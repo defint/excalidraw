@@ -72,7 +72,8 @@
     "addToLibrary": "Add to library",
     "removeFromLibrary": "Remove from library",
     "libraryLoadingMessage": "Loading library...",
-    "loadingScene": "Loading scene..."
+    "loadingScene": "Loading scene...",
+    "gridSize": "Grid size"
   },
   "buttons": {
     "clearReset": "Reset the canvas",
